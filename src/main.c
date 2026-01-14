@@ -69,6 +69,7 @@ int main(int argc, char **argv) {
                 }
             }
             av_packet_unref(packet);
-        }
+        } else
+            break;
     }
 }
