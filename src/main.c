@@ -14,6 +14,7 @@ int main(int argc, char **argv) {
                         argv[1],
                         NULL, NULL);
     const AVCodec *codec = NULL;
+    avformat_find_stream_info(format_context, NULL);
     const int video_stream_index = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
     const AVStream *video_stream = format_context->streams[video_stream_index];
     AVCodecContext *decoder = avcodec_alloc_context3(codec);
