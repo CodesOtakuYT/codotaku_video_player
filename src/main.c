@@ -1,3 +1,4 @@
+// ignore error handling, cleanup and flushing since we're quitting
 #include <SDL3/SDL.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -46,18 +47,25 @@ int main(int argc, char **argv) {
             if (packet->stream_index == video_stream_index) {
                 avcodec_send_packet(decoder, packet);
                 while (avcodec_receive_frame(decoder, frame) == 0) {
+                    bool skip_frame = false;
                     if (start_ns == 0) start_ns = SDL_GetTicksNS();
                     while (true) {
                         const Uint64 elapsed_time_ns = SDL_GetTicksNS() - start_ns;
                         const double elapsed_time_s = (double) elapsed_time_ns / SDL_NS_PER_SECOND;
                         const double frame_time_s = (double) frame->best_effort_timestamp * timebase;
                         const double delay_s = frame_time_s - elapsed_time_s;
+                        if (delay_s < -0.05)
+                            skip_frame = true;
+
                         if (delay_s <= 0.0)
                             break;
 
                         if (delay_s > 0.01)
                             SDL_Delay(1);
                     }
+
+                    if (skip_frame)
+                        continue;
 
                     SDL_UpdateYUVTexture(texture, NULL, frame->data[0], frame->linesize[0], frame->data[1],
                                          frame->linesize[1], frame->data[2], frame->linesize[2]);
