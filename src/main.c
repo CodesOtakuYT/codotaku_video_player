@@ -3,20 +3,18 @@
 #include <libavcodec/avcodec.h>
 
 int main(int argc, char **argv) {
-    SDL_Init(SDL_INIT_VIDEO);
-    SDL_Window *window;
-    SDL_Renderer *renderer;
-    SDL_CreateWindowAndRenderer("Codotaku video player", 800, 600, SDL_WINDOW_RESIZABLE, &window, &renderer);
-    SDL_MaximizeWindow(window);
-
     AVFormatContext *format_context = NULL;
     avformat_open_input(&format_context,
                         argv[1],
                         NULL, NULL);
-    const AVCodec *codec = NULL;
     avformat_find_stream_info(format_context, NULL);
+    const AVCodec *codec = NULL;
     const int video_stream_index = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
     const AVStream *video_stream = format_context->streams[video_stream_index];
+    for (int stream_index = 0; stream_index < format_context->nb_streams; stream_index++)
+        if (stream_index != video_stream_index)
+            format_context->streams[stream_index]->discard = AVDISCARD_ALL;
+
     AVCodecContext *decoder = avcodec_alloc_context3(codec);
     decoder->thread_count = 0;
     avcodec_parameters_to_context(decoder, video_stream->codecpar);
@@ -24,6 +22,12 @@ int main(int argc, char **argv) {
 
     AVPacket *packet = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
+
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_Window *window;
+    SDL_Renderer *renderer;
+    SDL_CreateWindowAndRenderer("Codotaku video player", decoder->width, decoder->height, SDL_WINDOW_RESIZABLE, &window,
+                                &renderer);
 
     SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YV12, SDL_TEXTUREACCESS_STREAMING,
                                              decoder->width,
@@ -46,7 +50,7 @@ int main(int argc, char **argv) {
                     const double delay_s = frame_time_s - elapsed_time_s;
                     if (delay_s > 0)
                         SDL_Delay((Uint32) (delay_s * SDL_MS_PER_SECOND));
-                    else if (delay_s < 0.5)
+                    else if (delay_s < -0.5)
                         continue;
 
                     SDL_UpdateYUVTexture(texture, NULL, frame->data[0], frame->linesize[0], frame->data[1],
