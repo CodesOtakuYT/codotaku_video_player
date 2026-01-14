@@ -19,6 +19,7 @@ int main(int argc, char **argv) {
     decoder->thread_count = 0;
     avcodec_parameters_to_context(decoder, video_stream->codecpar);
     avcodec_open2(decoder, codec, NULL);
+    SDL_assert(decoder->pix_fmt == AV_PIX_FMT_YUV420P);
 
     AVPacket *packet = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
@@ -28,12 +29,14 @@ int main(int argc, char **argv) {
     SDL_Renderer *renderer;
     SDL_CreateWindowAndRenderer("Codotaku video player", decoder->width, decoder->height, SDL_WINDOW_RESIZABLE, &window,
                                 &renderer);
+    SDL_SetRenderVSync(renderer, 1);
 
     SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YV12, SDL_TEXTUREACCESS_STREAMING,
                                              decoder->width,
                                              decoder->height);
 
     Uint64 start_ns = 0;
+    const double timebase = av_q2d(video_stream->time_base);
 
     while (true) {
         SDL_Event event;
@@ -43,15 +46,18 @@ int main(int argc, char **argv) {
             if (packet->stream_index == video_stream_index) {
                 avcodec_send_packet(decoder, packet);
                 while (avcodec_receive_frame(decoder, frame) == 0) {
-                    const double frame_time_s = (double) frame->pts * av_q2d(video_stream->time_base);
                     if (start_ns == 0) start_ns = SDL_GetTicksNS();
-                    const Uint64 elapsed_time_ns = SDL_GetTicksNS() - start_ns;
-                    const double elapsed_time_s = (double) elapsed_time_ns / SDL_NS_PER_SECOND;
-                    const double delay_s = frame_time_s - elapsed_time_s;
-                    if (delay_s > 0)
-                        SDL_Delay((Uint32) (delay_s * SDL_MS_PER_SECOND));
-                    else if (delay_s < -0.5)
-                        continue;
+                    while (true) {
+                        const Uint64 elapsed_time_ns = SDL_GetTicksNS() - start_ns;
+                        const double elapsed_time_s = (double) elapsed_time_ns / SDL_NS_PER_SECOND;
+                        const double frame_time_s = (double) frame->best_effort_timestamp * timebase;
+                        const double delay_s = frame_time_s - elapsed_time_s;
+                        if (delay_s <= 0.0)
+                            break;
+
+                        if (delay_s > 0.01)
+                            SDL_Delay(1);
+                    }
 
                     SDL_UpdateYUVTexture(texture, NULL, frame->data[0], frame->linesize[0], frame->data[1],
                                          frame->linesize[1], frame->data[2], frame->linesize[2]);
