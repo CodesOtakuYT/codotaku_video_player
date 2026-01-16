@@ -3,30 +3,46 @@
 #include <libavcodec/avcodec.h>
 
 int main(int argc, char **argv) {
-    SDL_Init(SDL_INIT_VIDEO);
-    SDL_Window *window;
-    SDL_Renderer *renderer;
-    SDL_CreateWindowAndRenderer("Codotaku video player", 800, 600, SDL_WINDOW_RESIZABLE, &window, &renderer);
-    SDL_MaximizeWindow(window);
-
     AVFormatContext *format_context = NULL;
     avformat_open_input(&format_context,
                         argv[1],
                         NULL, NULL);
-    const AVCodec *codec = NULL;
-    const int video_stream_index = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
+
+    const AVCodec *video_codec = NULL;
+    const int video_stream_index = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &video_codec, 0);
     const AVStream *video_stream = format_context->streams[video_stream_index];
-    AVCodecContext *decoder = avcodec_alloc_context3(codec);
-    decoder->thread_count = 0;
-    avcodec_parameters_to_context(decoder, video_stream->codecpar);
-    avcodec_open2(decoder, codec, NULL);
+    AVCodecContext *video_decoder = avcodec_alloc_context3(video_codec);
+    video_decoder->thread_count = 0;
+    avcodec_parameters_to_context(video_decoder, video_stream->codecpar);
+    avcodec_open2(video_decoder, video_codec, NULL);
+
+    const AVCodec *audio_codec = NULL;
+    const int audio_stream_index = av_find_best_stream(format_context, AVMEDIA_TYPE_AUDIO, -1, video_stream_index,
+                                                       &audio_codec, 0);
+    const AVStream *audio_stream = format_context->streams[audio_stream_index];
+    AVCodecContext *audio_decoder = avcodec_alloc_context3(audio_codec);
+    audio_decoder->thread_count = 0;
+    avcodec_parameters_to_context(audio_decoder, audio_stream->codecpar);
+    avcodec_open2(audio_decoder, audio_codec, NULL);
 
     AVPacket *packet = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
 
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
+    SDL_Window *window;
+    SDL_Renderer *renderer;
+    SDL_CreateWindowAndRenderer("Codotaku video player", 800, 600, SDL_WINDOW_RESIZABLE, &window, &renderer);
+    SDL_MaximizeWindow(window);
     SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YV12, SDL_TEXTUREACCESS_STREAMING,
-                                             decoder->width,
-                                             decoder->height);
+                                             video_decoder->width,
+                                             video_decoder->height);
+
+    const SDL_AudioSpec audio_spec = {
+        .format = SDL_AUDIO_F32, .channels = audio_decoder->ch_layout.nb_channels, .freq = audio_decoder->sample_rate
+    };
+    SDL_AudioStream *audio_playback_stream = SDL_OpenAudioDeviceStream(
+        SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, NULL, NULL);
+    SDL_ResumeAudioStreamDevice(audio_playback_stream);
 
     Uint64 start_ns = 0;
 
@@ -36,8 +52,8 @@ int main(int argc, char **argv) {
 
         if (av_read_frame(format_context, packet) >= 0) {
             if (packet->stream_index == video_stream_index) {
-                avcodec_send_packet(decoder, packet);
-                while (avcodec_receive_frame(decoder, frame) == 0) {
+                avcodec_send_packet(video_decoder, packet);
+                while (avcodec_receive_frame(video_decoder, frame) == 0) {
                     const double frame_time_s = (double) frame->pts * av_q2d(video_stream->time_base);
                     if (start_ns == 0) start_ns = SDL_GetTicksNS();
                     const Uint64 elapsed_time_ns = SDL_GetTicksNS() - start_ns;
@@ -45,7 +61,7 @@ int main(int argc, char **argv) {
                     const double delay_s = frame_time_s - elapsed_time_s;
                     if (delay_s > 0)
                         SDL_Delay((Uint32) (delay_s * SDL_MS_PER_SECOND));
-                    else if (delay_s < 0.5)
+                    else if (delay_s < -0.5)
                         continue;
 
                     SDL_UpdateYUVTexture(texture, NULL, frame->data[0], frame->linesize[0], frame->data[1],
@@ -53,8 +69,8 @@ int main(int argc, char **argv) {
 
                     int w, h;
                     SDL_GetCurrentRenderOutputSize(renderer, &w, &h);
-                    const float frame_width = (float) decoder->width;
-                    const float frame_height = (float) decoder->height;
+                    const float frame_width = (float) video_decoder->width;
+                    const float frame_height = (float) video_decoder->height;
                     const float scale_w = (float) w / frame_width;
                     const float scale_h = (float) h / frame_height;
                     const float scale = SDL_min(scale_w, scale_h);
@@ -67,8 +83,14 @@ int main(int argc, char **argv) {
                     SDL_RenderTexture(renderer, texture, NULL, &dstrect);
                     SDL_RenderPresent(renderer);
                 }
+            } else if (packet->stream_index == audio_stream_index) {
+                avcodec_send_packet(audio_decoder, packet);
+                while (avcodec_receive_frame(audio_decoder, frame) == 0) {
+                    SDL_PutAudioStreamPlanarData(audio_playback_stream, (void *) frame->data,
+                                                 audio_decoder->ch_layout.nb_channels, frame->nb_samples);
+                }
             }
             av_packet_unref(packet);
-        }
+        } else break;
     }
 }
