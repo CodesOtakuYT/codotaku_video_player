@@ -1,4 +1,3 @@
-// ignore error handling, cleanup and flushing since we're quitting
 #include <SDL3/SDL.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
@@ -8,30 +7,32 @@ int main(int argc, char **argv) {
     avformat_open_input(&format_context,
                         argv[1],
                         NULL, NULL);
-    avformat_find_stream_info(format_context, NULL);
-    const AVCodec *codec = NULL;
-    const int video_stream_index = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
-    const AVStream *video_stream = format_context->streams[video_stream_index];
-    for (int stream_index = 0; stream_index < format_context->nb_streams; stream_index++)
-        if (stream_index != video_stream_index)
-            format_context->streams[stream_index]->discard = AVDISCARD_ALL;
 
-    AVCodecContext *decoder = avcodec_alloc_context3(codec);
-    decoder->thread_count = 0;
-    avcodec_parameters_to_context(decoder, video_stream->codecpar);
-    avcodec_open2(decoder, codec, NULL);
-    SDL_assert(decoder->pix_fmt == AV_PIX_FMT_YUV420P);
+    const AVCodec *video_codec = NULL;
+    const int video_stream_index = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, &video_codec, 0);
+    const AVStream *video_stream = format_context->streams[video_stream_index];
+    AVCodecContext *video_decoder = avcodec_alloc_context3(video_codec);
+    video_decoder->thread_count = 0;
+    avcodec_parameters_to_context(video_decoder, video_stream->codecpar);
+    avcodec_open2(video_decoder, video_codec, NULL);
+
+    const AVCodec *audio_codec = NULL;
+    const int audio_stream_index = av_find_best_stream(format_context, AVMEDIA_TYPE_AUDIO, -1, video_stream_index,
+                                                       &audio_codec, 0);
+    const AVStream *audio_stream = format_context->streams[audio_stream_index];
+    AVCodecContext *audio_decoder = avcodec_alloc_context3(audio_codec);
+    audio_decoder->thread_count = 0;
+    avcodec_parameters_to_context(audio_decoder, audio_stream->codecpar);
+    avcodec_open2(audio_decoder, audio_codec, NULL);
 
     AVPacket *packet = av_packet_alloc();
     AVFrame *frame = av_frame_alloc();
 
-    SDL_Init(SDL_INIT_VIDEO);
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
     SDL_Window *window;
     SDL_Renderer *renderer;
-    SDL_CreateWindowAndRenderer("Codotaku video player", decoder->width, decoder->height, SDL_WINDOW_RESIZABLE, &window,
-                                &renderer);
-    SDL_SetRenderVSync(renderer, 1);
-
+    SDL_CreateWindowAndRenderer("Codotaku video player", 800, 600, SDL_WINDOW_RESIZABLE, &window, &renderer);
+    SDL_MaximizeWindow(window);
     SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YV12, SDL_TEXTUREACCESS_STREAMING,
                                              video_decoder->width,
                                              video_decoder->height);
@@ -44,7 +45,6 @@ int main(int argc, char **argv) {
     SDL_ResumeAudioStreamDevice(audio_playback_stream);
 
     Uint64 start_ns = 0;
-    const double timebase = av_q2d(video_stream->time_base);
 
     while (true) {
         SDL_Event event;
@@ -52,26 +52,16 @@ int main(int argc, char **argv) {
 
         if (av_read_frame(format_context, packet) >= 0) {
             if (packet->stream_index == video_stream_index) {
-                avcodec_send_packet(decoder, packet);
-                while (avcodec_receive_frame(decoder, frame) == 0) {
-                    bool skip_frame = false;
+                avcodec_send_packet(video_decoder, packet);
+                while (avcodec_receive_frame(video_decoder, frame) == 0) {
+                    const double frame_time_s = (double) frame->pts * av_q2d(video_stream->time_base);
                     if (start_ns == 0) start_ns = SDL_GetTicksNS();
-                    while (true) {
-                        const Uint64 elapsed_time_ns = SDL_GetTicksNS() - start_ns;
-                        const double elapsed_time_s = (double) elapsed_time_ns / SDL_NS_PER_SECOND;
-                        const double frame_time_s = (double) frame->best_effort_timestamp * timebase;
-                        const double delay_s = frame_time_s - elapsed_time_s;
-                        if (delay_s < -0.05)
-                            skip_frame = true;
-
-                        if (delay_s <= 0.0)
-                            break;
-
-                        if (delay_s > 0.01)
-                            SDL_Delay(1);
-                    }
-
-                    if (skip_frame)
+                    const Uint64 elapsed_time_ns = SDL_GetTicksNS() - start_ns;
+                    const double elapsed_time_s = (double) elapsed_time_ns / SDL_NS_PER_SECOND;
+                    const double delay_s = frame_time_s - elapsed_time_s;
+                    if (delay_s > 0)
+                        SDL_Delay((Uint32) (delay_s * SDL_MS_PER_SECOND));
+                    else if (delay_s < -0.5)
                         continue;
 
                     SDL_UpdateYUVTexture(texture, NULL, frame->data[0], frame->linesize[0], frame->data[1],
@@ -101,7 +91,6 @@ int main(int argc, char **argv) {
                 }
             }
             av_packet_unref(packet);
-        } else
-            break;
+        } else break;
     }
 }
