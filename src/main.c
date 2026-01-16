@@ -33,8 +33,15 @@ int main(int argc, char **argv) {
     SDL_SetRenderVSync(renderer, 1);
 
     SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YV12, SDL_TEXTUREACCESS_STREAMING,
-                                             decoder->width,
-                                             decoder->height);
+                                             video_decoder->width,
+                                             video_decoder->height);
+
+    const SDL_AudioSpec audio_spec = {
+        .format = SDL_AUDIO_F32, .channels = audio_decoder->ch_layout.nb_channels, .freq = audio_decoder->sample_rate
+    };
+    SDL_AudioStream *audio_playback_stream = SDL_OpenAudioDeviceStream(
+        SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audio_spec, NULL, NULL);
+    SDL_ResumeAudioStreamDevice(audio_playback_stream);
 
     Uint64 start_ns = 0;
     const double timebase = av_q2d(video_stream->time_base);
@@ -72,8 +79,8 @@ int main(int argc, char **argv) {
 
                     int w, h;
                     SDL_GetCurrentRenderOutputSize(renderer, &w, &h);
-                    const float frame_width = (float) decoder->width;
-                    const float frame_height = (float) decoder->height;
+                    const float frame_width = (float) video_decoder->width;
+                    const float frame_height = (float) video_decoder->height;
                     const float scale_w = (float) w / frame_width;
                     const float scale_h = (float) h / frame_height;
                     const float scale = SDL_min(scale_w, scale_h);
@@ -85,6 +92,12 @@ int main(int argc, char **argv) {
 
                     SDL_RenderTexture(renderer, texture, NULL, &dstrect);
                     SDL_RenderPresent(renderer);
+                }
+            } else if (packet->stream_index == audio_stream_index) {
+                avcodec_send_packet(audio_decoder, packet);
+                while (avcodec_receive_frame(audio_decoder, frame) == 0) {
+                    SDL_PutAudioStreamPlanarData(audio_playback_stream, (void *) frame->data,
+                                                 audio_decoder->ch_layout.nb_channels, frame->nb_samples);
                 }
             }
             av_packet_unref(packet);
